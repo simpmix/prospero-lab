@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "prospero-lab"
+version = "0.1.0"
+description = "Security Research & Exploration Toolkit for PlayStation 5 (Prospero OS)"
+authors = [{ name = "Security Research Community" }]
+readme = "README.md"
+requires-python = ">=3.9"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Topic :: Security",
+    "Operating System :: OS Independent",
+]
+
+[project.scripts]
+prospero-lab = "prospero_lab.cli:main"
