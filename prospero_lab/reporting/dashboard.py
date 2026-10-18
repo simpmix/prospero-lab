@@ -1,0 +1,241 @@
+"""
+Interactive HTML Audit Report & Security Dashboard Generator.
+Generates an offline, single-file HTML report summarizing Prospero kernel attack surfaces,
+XOM mitigation findings, and BD-J compliance.
+"""
+
+from pathlib import Path
+from typing import Dict, Any, Optional
+from prospero_lab.kernel.surface_auditor import KernelSurfaceAuditor
+
+
+HTML_TEMPLATE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ProsperoLab // PS5 Security Research Dashboard</title>
+    <style>
+        :root {
+            --bg-color: #0d1117;
+            --card-bg: #161b22;
+            --border-color: #30363d;
+            --text-main: #c9d1d9;
+            --text-muted: #8b949e;
+            --accent-blue: #58a6ff;
+            --accent-green: #3fb950;
+            --accent-red: #f85149;
+            --accent-orange: #d29922;
+            --accent-purple: #bc8cff;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            margin: 0;
+            padding: 24px;
+            line-height: 1.5;
+        }
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 16px;
+            margin-bottom: 24px;
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 24px;
+            font-weight: 600;
+            color: var(--accent-blue);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .badge {
+            background-color: rgba(88, 166, 255, 0.15);
+            color: var(--accent-blue);
+            font-size: 12px;
+            padding: 4px 8px;
+            border-radius: 12px;
+            border: 1px solid rgba(88, 166, 255, 0.3);
+        }
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+        .card {
+            background-color: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 16px;
+        }
+        .card .title {
+            font-size: 13px;
+            color: var(--text-muted);
+            margin-bottom: 6px;
+            text-transform: uppercase;
+            font-weight: 600;
+        }
+        .card .value {
+            font-size: 28px;
+            font-weight: 700;
+            color: #fff;
+        }
+        .card.danger .value { color: var(--accent-red); }
+        .card.warning .value { color: var(--accent-orange); }
+        .card.success .value { color: var(--accent-green); }
+        
+        .section-title {
+            font-size: 18px;
+            font-weight: 600;
+            margin: 24px 0 12px 0;
+            color: #fff;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            background-color: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            overflow: hidden;
+            margin-bottom: 24px;
+        }
+        th, td {
+            padding: 12px 16px;
+            text-align: left;
+            border-bottom: 1px solid var(--border-color);
+            font-size: 14px;
+        }
+        th {
+            background-color: #21262d;
+            color: var(--text-muted);
+            font-weight: 600;
+        }
+        tr:hover {
+            background-color: rgba(255, 255, 255, 0.02);
+        }
+        .tag {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        .tag-ipc { background: #388bfd26; color: #58a6ff; }
+        .tag-threading { background: #d2992226; color: #d29922; }
+        .tag-memory { background: #bc8cff26; color: #bc8cff; }
+        .tag-hardware { background: #f8514926; color: #f85149; }
+        .tag-loader { background: #3fb95026; color: #3fb950; }
+
+        pre {
+            background-color: #030407;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 16px;
+            overflow-x: auto;
+            color: #79c0ff;
+            font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+            font-size: 12px;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>
+            <span>ProsperoLab Security Audit</span>
+            <span class="badge">PlayStation 5 / Prospero OS</span>
+        </h1>
+        <div style="font-size: 12px; color: var(--text-muted);">
+            Generated by <code>prospero-lab</code>
+        </div>
+    </div>
+
+    <div class="grid">
+        <div class="card">
+            <div class="title">Monitored Syscalls</div>
+            <div class="value">{{TOTAL_SYSCALLS}}</div>
+        </div>
+        <div class="card danger">
+            <div class="title">Race / UAF Targets</div>
+            <div class="value">{{CRITICAL_TARGETS}}</div>
+        </div>
+        <div class="card warning">
+            <div class="title">ASLR Infoleak Vectors</div>
+            <div class="value">{{INFOLEAK_TARGETS}}</div>
+        </div>
+        <div class="card success">
+            <div class="title">BD-J Compliance Engine</div>
+            <div class="value">Ready</div>
+        </div>
+    </div>
+
+    <div class="section-title">Critical Kernel Attack Surface (Race Conditions & Memory Corruption)</div>
+    <table>
+        <thead>
+            <tr>
+                <th style="width: 80px;">Syscall #</th>
+                <th>System Call Name</th>
+                <th>Subsystem</th>
+                <th>Vulnerability Class</th>
+                <th>Audit Notes</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{SYSCALL_ROWS}}
+        </tbody>
+    </table>
+
+    <div class="section-title">Automated Syzkaller Fuzzer Grammar</div>
+    <pre><code>{{SYZKALLER_CODE}}</code></pre>
+</body>
+</html>
+"""
+
+
+class DashboardGenerator:
+    """
+    Renders the security audit results into an offline single-file HTML report.
+    """
+
+    def __init__(self, auditor: Optional[KernelSurfaceAuditor] = None):
+        self.auditor = auditor or KernelSurfaceAuditor()
+
+    def generate_html(self) -> str:
+        report = self.auditor.audit_attack_surface()
+        syzkaller_defs = self.auditor.generate_syzkaller_descriptions()
+
+        rows = []
+        for t in report["critical_race_uaf_targets"]:
+            sub = t["subsystem"]
+            tag_class = f"tag tag-{sub}" if sub in ["ipc", "threading", "memory", "hardware", "loader"] else "tag"
+            rows.append(
+                f"<tr>"
+                f"  <td><strong>#{t['num']}</strong></td>"
+                f"  <td><code>{t['name']}</code></td>"
+                f"  <td><span class='{tag_class}'>{sub}</span></td>"
+                f"  <td style='color: var(--accent-red);'>{t['vuln_class']}</td>"
+                f"  <td style='color: var(--text-muted);'>{t['notes']}</td>"
+                f"</tr>"
+            )
+
+        html = (
+            HTML_TEMPLATE
+            .replace("{{TOTAL_SYSCALLS}}", str(report["total_monitored_syscalls"]))
+            .replace("{{CRITICAL_TARGETS}}", str(len(report["critical_race_uaf_targets"])))
+            .replace("{{INFOLEAK_TARGETS}}", str(len(report["aslr_bypass_targets"])))
+            .replace("{{SYSCALL_ROWS}}", "\n".join(rows))
+            .replace("{{SYZKALLER_CODE}}", syzkaller_defs.replace("<", "&lt;").replace(">", "&gt;"))
+        )
+        return html
+
+    def write_report(self, target_path: Path) -> Path:
+        target_path.write_text(self.generate_html(), encoding="utf-8")
+        return target_path

@@ -1,6 +1,7 @@
 """
 ProsperoLab Unified Command Line Interface.
-Tools for BD-J disc generation, XOM/ROP mitigation auditing, and Prospero kernel analysis.
+Tools for BD-J disc generation, XOM/ROP mitigation auditing, SELF parsing,
+simulation, and Prospero kernel attack surface analysis.
 """
 
 import argparse
@@ -15,6 +16,9 @@ from prospero_lab.xom.elf_parser import ELF64Parser
 from prospero_lab.xom.gadget_analyzer import GadgetAnalyzer
 from prospero_lab.xom.blind_rop import ROPChainBuilder
 from prospero_lab.kernel.surface_auditor import KernelSurfaceAuditor
+from prospero_lab.formats.self_parser import SELFParser
+from prospero_lab.simulator.mock_runtime import MockRuntime
+from prospero_lab.reporting.dashboard import DashboardGenerator
 
 
 def cmd_bdj_create(args):
@@ -125,7 +129,6 @@ def cmd_kernel_audit(args):
 
 def cmd_build_chain(args):
     print("[*] Generating Sample 64-bit Syscall ROP Chain (e.g. sys_mprotect)...")
-    # Mock gadget table representing standard Prospero addresses
     gadget_map = {
         "pop_rdi": 0x7FFF00010000,
         "pop_rsi": 0x7FFF00010050,
@@ -136,13 +139,95 @@ def cmd_build_chain(args):
 
     builder = ROPChainBuilder(gadget_map)
     # mprotect(addr=0x100000, len=0x4000, prot=0x7 [RWX])
-    # Syscall #74 is mprotect
     builder.build_syscall(sys_num=74, arg1=0x100000, arg2=0x4000, arg3=0x7)
 
     raw_chain = builder.serialize()
     print(f"[+] Chain size: {len(raw_chain)} bytes ({len(raw_chain)//8} QWORDS)")
     print("\nSerialized ROP Stack Layout:")
     print(builder.hex_dump())
+
+
+def cmd_simulate_chain(args):
+    print("[*] Setting up Mock Virtual Execution Runtime (AMD64)...")
+    vm = MockRuntime()
+
+    # Define gadget virtual addresses
+    addr_pop_rdi = 0x7FFF00010000
+    addr_pop_rsi = 0x7FFF00010050
+    addr_pop_rdx = 0x7FFF000100A0
+    addr_pop_rax = 0x7FFF000100F0
+    addr_syscall = 0x7FFF00010120
+
+    # Register gadget handlers
+    vm.register_gadget(addr_pop_rdi, "pop rdi; ret", lambda rt: setattr(rt.cpu, "rdi", rt.read_qword(rt.cpu.rsp, allow_xom=True)) or setattr(rt.cpu, "rsp", rt.cpu.rsp + 8))
+    vm.register_gadget(addr_pop_rsi, "pop rsi; ret", lambda rt: setattr(rt.cpu, "rsi", rt.read_qword(rt.cpu.rsp, allow_xom=True)) or setattr(rt.cpu, "rsp", rt.cpu.rsp + 8))
+    vm.register_gadget(addr_pop_rdx, "pop rdx; ret", lambda rt: setattr(rt.cpu, "rdx", rt.read_qword(rt.cpu.rsp, allow_xom=True)) or setattr(rt.cpu, "rsp", rt.cpu.rsp + 8))
+    vm.register_gadget(addr_pop_rax, "pop rax; ret", lambda rt: setattr(rt.cpu, "rax", rt.read_qword(rt.cpu.rsp, allow_xom=True)) or setattr(rt.cpu, "rsp", rt.cpu.rsp + 8))
+    vm.register_gadget(addr_syscall, "syscall; ret", lambda rt: None)
+
+    # Build ROP chain for sys_mprotect(0x100000, 0x4000, 0x7)
+    builder = ROPChainBuilder({
+        "pop_rdi": addr_pop_rdi,
+        "pop_rsi": addr_pop_rsi,
+        "pop_rdx": addr_pop_rdx,
+        "pop_rax": addr_pop_rax,
+        "syscall": addr_syscall,
+    })
+    builder.build_syscall(sys_num=74, arg1=0x100000, arg2=0x4000, arg3=0x7)
+
+    payload = builder.serialize()
+    fake_stack = 0x7FFFFFFFE000
+    vm.load_rop_chain(fake_stack, payload)
+
+    print(f"[*] Running ROP payload simulation from stack: 0x{fake_stack:x}...")
+    traces = vm.run_rop()
+
+    print(f"[+] Simulation completed successfully ({len(traces)} gadget steps executed)!\n")
+    for tr in traces:
+        print(f"Step {tr.step_num:02d} | RIP: 0x{tr.rip:012x} | {tr.disassembly:<15}")
+        if tr.syscall_dispatched:
+            sc = tr.syscall_dispatched
+            print(f"    --> [SYSCALL #{sc['syscall_number']}] RDI=0x{sc['arg1_rdi']:x}, RSI=0x{sc['arg2_rsi']:x}, RDX=0x{sc['arg3_rdx']:x}")
+            print(f"        Result: {sc['effect']}")
+
+    print("\nFinal CPU State:")
+    print(vm.cpu.dump())
+
+
+def cmd_parse_self(args):
+    target = Path(args.file)
+    if not target.is_file():
+        print(f"[-] Error: File {target} does not exist.")
+        sys.exit(1)
+
+    data = target.read_bytes()
+    print(f"[*] Parsing SELF binary: {target.name} ({len(data)} bytes)...")
+    try:
+        parser = SELFParser(data)
+        summary = parser.get_summary()
+
+        print("\n=== SONY SIGNED ELF (SELF) HEADER ===")
+        print(f"  Magic:           {summary['magic']!r}")
+        print(f"  Format Version:  {summary['version']}")
+        print(f"  Endianness:      {summary['endianness']}")
+        print(f"  Total File Size: {summary['total_file_size']} bytes")
+        print(f"  Total Segments:  {summary['num_segments']}")
+        print(f"  Fully Decrypted: {'YES' if summary['fully_decrypted'] else 'NO (Contains SAMU encrypted segments)'}")
+
+        print("\nSegment Descriptors:")
+        for seg in summary["segments"]:
+            print(f"  Segment #{seg['index']:<2} Offset: {seg['offset']:<10} FileSize: {seg['file_size']:<10} MemSize: {seg['memory_size']:<10} [{seg['status']}]")
+
+    except Exception as e:
+        print(f"[-] Failed to parse SELF container: {e}")
+
+
+def cmd_generate_dashboard(args):
+    out_file = Path(args.output)
+    print(f"[*] Generating offline security audit dashboard to: {out_file}...")
+    dash = DashboardGenerator()
+    dash.write_report(out_file)
+    print(f"[+] Dashboard generated successfully! Open file:///{out_file.resolve()} in your browser.")
 
 
 def main():
@@ -173,6 +258,20 @@ def main():
     # Command: build-chain
     p_chain = subparsers.add_parser("build-chain", help="Synthesize and inspect a 64-bit ROP syscall chain")
     p_chain.set_defaults(func=cmd_build_chain)
+
+    # Command: simulate-chain
+    p_sim = subparsers.add_parser("simulate-chain", help="Simulate 64-bit ROP execution in a mock AMD64 environment")
+    p_sim.set_defaults(func=cmd_simulate_chain)
+
+    # Command: parse-self
+    p_self = subparsers.add_parser("parse-self", help="Parse Sony Signed ELF (SELF/SPRX) container headers")
+    p_self.add_argument("file", help="Path to SELF / SPRX binary")
+    p_self.set_defaults(func=cmd_parse_self)
+
+    # Command: dashboard
+    p_dash = subparsers.add_parser("dashboard", help="Generate an interactive single-file HTML audit report")
+    p_dash.add_argument("-o", "--output", default="prospero_audit_dashboard.html", help="Output HTML file path")
+    p_dash.set_defaults(func=cmd_generate_dashboard)
 
     args = parser.parse_args()
     if not args.command:
