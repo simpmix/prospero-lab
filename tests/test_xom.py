@@ -78,6 +78,14 @@ class TestXOM(unittest.TestCase):
         parser2 = ELF64Parser(elf_xom)
         self.assertTrue(parser2.check_xom_enforcement())
 
+    def test_malformed_elf_error(self):
+        from prospero_lab.exceptions import ELFParseError
+        with self.assertRaises(ELFParseError):
+            ELF64Parser(b"\x00" * 30)
+
+        with self.assertRaises(ELFParseError):
+            ELF64Parser(b"INVALID_MAGIC" + (b"\x00" * 60))
+
     def test_gadget_analyzer_and_jop(self):
         # Code containing:
         # pop rdi; ret (0x5f 0xc3)

@@ -148,6 +148,10 @@ class SELFParser:
             # Parse Control Info Metadata Blocks if present
             if meta_size > 0 and curr_offset + meta_size <= len(self.data):
                 self._parse_control_info(curr_offset, meta_size)
+        elif self.data.startswith(SELF_MAGIC_OSELF):
+            raise SELFParseError("Legacy Orbis OSELF format requires decryption with SAMU keys before parsing.")
+        else:
+            raise SELFParseError(f"Unsupported SELF container variant: {magic!r}")
 
     def _parse_control_info(self, start_offset: int, total_size: int):
         end = start_offset + total_size
@@ -163,7 +167,7 @@ class SELFParser:
 
         while offset + 8 <= end:
             type_id, block_size = struct.unpack_from("<II", self.data, offset)
-            if block_size == 0 or offset + block_size > end:
+            if block_size < 8 or offset + block_size > end:
                 break
 
             block_data = self.data[offset + 8 : offset + block_size]
@@ -203,7 +207,7 @@ class SELFParser:
 
         start = seg0.offset
         end = start + seg0.file_size
-        if end <= len(self.data):
+        if start < len(self.data) and end <= len(self.data) and end > start:
             candidate = self.data[start:end]
             if candidate.startswith(b"\x7fELF"):
                 return candidate

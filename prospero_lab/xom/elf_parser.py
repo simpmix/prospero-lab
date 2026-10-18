@@ -6,6 +6,7 @@ Detects segment permissions, XOM (Execute-Only Memory) enforcement, and program 
 import struct
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
+from prospero_lab.exceptions import ELFParseError
 
 
 # Program header types
@@ -77,15 +78,15 @@ class ELF64Parser:
 
     def _parse(self):
         if len(self.data) < 64:
-            raise ValueError("File is too small to be a valid ELF64 binary.")
+            raise ELFParseError("File is too small to be a valid ELF64 binary.")
 
         # Check Magic \x7fELF
         if self.data[:4] != b"\x7fELF":
-            raise ValueError("Invalid ELF magic header.")
+            raise ELFParseError("Invalid ELF magic header.")
 
         ei_class = self.data[4]
         if ei_class != 2:
-            raise ValueError("Only 64-bit ELF binaries are supported.")
+            raise ELFParseError("Only 64-bit ELF binaries are supported.")
 
         ei_data = self.data[5]  # 1 = little endian, 2 = big endian
         endian = "<" if ei_data == 1 else ">"
@@ -97,6 +98,9 @@ class ELF64Parser:
         e_phentsize = struct.unpack_from(f"{endian}H", self.data, 54)[0]
         # e_phnum is at offset 56 (2 bytes)
         e_phnum = struct.unpack_from(f"{endian}H", self.data, 56)[0]
+
+        if e_phentsize < 56:
+            return
 
         # Unpack each Program Header
         for i in range(e_phnum):
@@ -126,10 +130,11 @@ class ELF64Parser:
         """
         results = []
         for ph in self.headers:
-            if ph.is_executable and ph.p_filesz > 0:
-                end = ph.p_offset + ph.p_filesz
-                seg_bytes = self.data[ph.p_offset:end]
-                results.append((ph, seg_bytes))
+            if ph.is_executable and ph.p_filesz > 0 and ph.p_offset < len(self.data):
+                end = min(ph.p_offset + ph.p_filesz, len(self.data))
+                if end > ph.p_offset:
+                    seg_bytes = self.data[ph.p_offset:end]
+                    results.append((ph, seg_bytes))
         return results
 
     def check_xom_enforcement(self) -> bool:
