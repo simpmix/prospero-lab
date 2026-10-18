@@ -69,6 +69,26 @@ class TestBDMV(unittest.TestCase):
         jar_min = bundler_min.build_jar()
         self.assertGreater(len(jar_min), 100)
 
+    def test_iso_mastering(self):
+        generator = BDMVGenerator()
+        generator.build_structure(self.base_dir)
+        bundler = XletBundler()
+        bundler.write_jar_to_bdmv(self.base_dir / "BDMV" / "JAR")
+
+        iso_path = self.base_dir / "test.iso"
+        builder = DiscImageBuilder(self.base_dir)
+        builder.create_iso(iso_path)
+
+        self.assertTrue(iso_path.is_file())
+        iso_bytes = iso_path.read_bytes()
+        self.assertGreater(len(iso_bytes), 256 * 2048)
+
+        # Check Volume Recognition Sequence (Sector 16 BEA01, Sector 17 NSR03)
+        bea01 = iso_bytes[16 * 2048 : 17 * 2048]
+        self.assertTrue(bea01.startswith(b"\x00BEA01\x01"))
+        nsr03 = iso_bytes[17 * 2048 : 18 * 2048]
+        self.assertTrue(nsr03.startswith(b"\x00NSR03\x01"))
+
 
 if __name__ == "__main__":
     unittest.main()

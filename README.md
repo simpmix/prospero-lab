@@ -72,6 +72,9 @@ python -m prospero_lab.cli bdj-create --output my_disc --burn-instructions
 
 # Generate with targeted permission profiles (unrestricted, network, storage, minimal)
 python -m prospero_lab.cli bdj-create --profile network --output my_net_disc
+
+# Directly master a sector-accurate UDF 2.50 .iso image (pure-Python, no external tools needed)
+python -m prospero_lab.cli bdj-create --output my_disc --iso prospero_bdj.iso
 ```
 
 ### 2. Simulating ROP Execution in a Mock AMD64 Runtime (`simulate-chain`)

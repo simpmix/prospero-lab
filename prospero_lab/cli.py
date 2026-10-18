@@ -45,6 +45,11 @@ def cmd_bdj_create(args):
         for check, passed in compliance["details"].items():
             print(f"    {'[OK]' if passed else '[FAIL]'} {check}")
 
+    if args.iso:
+        iso_out = Path(args.iso)
+        builder.create_iso(iso_out)
+        logger.info(f"Mastered UDF 2.50 ISO disc image directly to: {iso_out}")
+
     if args.burn_instructions:
         print("\n" + builder.export_burn_instructions())
 
@@ -269,6 +274,7 @@ def main():
     p_bdj.add_argument("-o", "--output", default="prospero_bdj_disc", help="Output directory for BDMV tree")
     p_bdj.add_argument("--xlet-class", default="prospero.research.ProbeXlet", help="Target Java Xlet entry class")
     p_bdj.add_argument("--profile", choices=list(PERMISSION_PROFILES.keys()), default="unrestricted", help="Permission preset")
+    p_bdj.add_argument("--iso", help="Directly master a sector-accurate UDF 2.50 .iso file to this path")
     p_bdj.add_argument("--burn-instructions", action="store_true", help="Print ISO authoring & burning instructions")
     p_bdj.set_defaults(func=cmd_bdj_create)
 

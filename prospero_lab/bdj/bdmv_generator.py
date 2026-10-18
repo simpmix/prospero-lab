@@ -67,7 +67,9 @@ class BDMVGenerator:
 
         # Objects table: length (4), reserved (2), count (2)
         # Entry 0: resume intention (1), flags (1), num commands (2)
-        entry = struct.pack(">BBH", 0x00, 0x00, 0)
+        # Command 0: Jump Title 1 (opcode: 0x21800000, operand1: 1, operand2: 0)
+        hdmv_cmd = struct.pack(">III", 0x21800000, 1, 0)
+        entry = struct.pack(">BBH", 0x00, 0x00, 1) + hdmv_cmd
         table_body = struct.pack(">HH", 0, 1) + entry
         table = struct.pack(">I", len(table_body)) + table_body
 
