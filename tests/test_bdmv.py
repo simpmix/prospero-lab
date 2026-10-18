@@ -57,6 +57,18 @@ class TestBDMV(unittest.TestCase):
         comp = builder.validate_compliance()
         self.assertTrue(comp["compliant"])
 
+    def test_permission_profiles(self):
+        bundler_net = XletBundler(permission_profile="network")
+        jar_net = bundler_net.build_jar()
+        with tempfile.SpooledTemporaryFile() as tmp:
+            with zipfile.ZipFile(tmp, "w"):
+                pass
+        self.assertGreater(len(jar_net), 100)
+
+        bundler_min = XletBundler(permission_profile="minimal")
+        jar_min = bundler_min.build_jar()
+        self.assertGreater(len(jar_min), 100)
+
 
 if __name__ == "__main__":
     unittest.main()

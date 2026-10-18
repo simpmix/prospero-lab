@@ -8,6 +8,9 @@ import struct
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple, Any
 
+from prospero_lab.exceptions import XOMViolationError, WXPViolationError, SimulationError
+from prospero_lab.xom.gadget_analyzer import Gadget
+
 # Memory protection flags
 PROT_NONE = 0x0
 PROT_READ = 0x1
@@ -27,7 +30,13 @@ class MemoryRegion:
 
     @property
     def is_xom(self) -> bool:
+        """Execute-Only Memory: executable but not readable."""
         return bool(self.prot & PROT_EXEC) and not bool(self.prot & PROT_READ)
+
+    @property
+    def is_writable_and_executable(self) -> bool:
+        """Violates W^X (Write XOR Execute) security mitigation."""
+        return bool(self.prot & PROT_WRITE) and bool(self.prot & PROT_EXEC)
 
 
 @dataclass
@@ -67,13 +76,19 @@ class MockRuntime:
     under FreeBSD / Prospero security constraints.
     """
 
-    def __init__(self):
+    def __init__(self, enforce_wx: bool = True):
         self.cpu = CPUState()
         self.memory_regions: List[MemoryRegion] = []
         self.memory: Dict[int, int] = {}  # 64-bit aligned virtual address -> 64-bit integer
         self.gadget_handlers: Dict[int, Tuple[str, Any]] = {}
         self.syscall_log: List[Dict[str, Any]] = []
         self.traces: List[ExecutionTrace] = []
+        self.enforce_wx = enforce_wx
+
+        # Simulated kernel state
+        self.active_event_flags: Dict[int, int] = {}
+        self.named_objects: Dict[str, int] = {}
+        self.next_handle_id: int = 100
 
     def map_region(self, vaddr: int, size: int, prot: int, name: str = "") -> MemoryRegion:
         region = MemoryRegion(start_vaddr=vaddr, size=size, prot=prot, name=name)
@@ -89,13 +104,50 @@ class MockRuntime:
     def register_gadget(self, vaddr: int, disasm: str, handler):
         self.gadget_handlers[vaddr] = (disasm, handler)
 
+    def load_gadgets_from_analyzer(self, gadgets: List[Gadget]):
+        """
+        Automatically registers CPU manipulation handlers for gadgets identified
+        by GadgetAnalyzer.
+        """
+        for g in gadgets:
+            disasm = g.disassembly.strip()
+            vaddr = g.address
+
+            if disasm.startswith("pop ") and disasm.endswith("; ret"):
+                reg_name = disasm[4:-5].strip()
+                if hasattr(self.cpu, reg_name):
+                    def make_pop(rn):
+                        return lambda rt: (
+                            setattr(rt.cpu, rn, rt.read_qword(rt.cpu.rsp, allow_xom=True)),
+                            setattr(rt.cpu, "rsp", rt.cpu.rsp + 8),
+                        )
+                    self.register_gadget(vaddr, disasm, make_pop(reg_name))
+
+            elif disasm == "syscall; ret" or disasm == "syscall":
+                self.register_gadget(vaddr, disasm, lambda rt: None)
+
+            elif disasm == "mov [rdi], rsi; ret":
+                self.register_gadget(
+                    vaddr, disasm,
+                    lambda rt: rt.write_qword(rt.cpu.rdi, rt.cpu.rsi)
+                )
+
+            elif disasm == "mov rax, [rdi]; ret":
+                self.register_gadget(
+                    vaddr, disasm,
+                    lambda rt: setattr(rt.cpu, "rax", rt.read_qword(rt.cpu.rdi))
+                )
+
     def write_qword(self, vaddr: int, value: int):
+        reg = self.find_region(vaddr)
+        if reg and not (reg.prot & PROT_WRITE):
+            raise PermissionError(f"[WRITE FAULT] Illegal write at non-writable vaddr 0x{vaddr:x}")
         self.memory[vaddr & ~0x7] = value & 0xFFFFFFFFFFFFFFFF
 
     def read_qword(self, vaddr: int, allow_xom: bool = False) -> int:
         reg = self.find_region(vaddr)
         if reg and reg.is_xom and not allow_xom:
-            raise PermissionError(f"[XOM VIOLATION] Attempted read on Execute-Only page at 0x{vaddr:x}")
+            raise XOMViolationError(f"[XOM VIOLATION] Attempted read on Execute-Only page at 0x{vaddr:x}")
         return self.memory.get(vaddr & ~0x7, 0)
 
     def load_rop_chain(self, stack_base: int, payload_bytes: bytes):
@@ -118,7 +170,6 @@ class MockRuntime:
         """
         step = 0
         while step < max_steps:
-            # Check if stack is empty
             if self.cpu.rsp not in self.memory:
                 break
 
@@ -129,16 +180,21 @@ class MockRuntime:
             if gadget_addr == 0:
                 break
 
+            # Check W^X enforcement
+            reg = self.find_region(gadget_addr)
+            if self.enforce_wx and reg and reg.is_writable_and_executable:
+                raise WXPViolationError(
+                    f"[W^X VIOLATION] Execution attempted in W+X page at 0x{gadget_addr:x} (Region: {reg.name})"
+                )
+
             if gadget_addr not in self.gadget_handlers:
-                # Unmapped gadget / crash
-                raise LookupError(f"Segmentation Fault: Unknown gadget address 0x{gadget_addr:x} at step {step}")
+                raise SimulationError(f"Segmentation Fault: Unknown gadget address 0x{gadget_addr:x} at step {step}")
 
             disasm, handler = self.gadget_handlers[gadget_addr]
             cpu_before = dict(self.cpu.__dict__)
 
             syscall_info = None
-            # Execute handler
-            if disasm == "syscall" or disasm == "syscall; ret":
+            if "syscall" in disasm:
                 syscall_info = self._handle_syscall()
             else:
                 handler(self)
@@ -171,7 +227,7 @@ class MockRuntime:
             "success": True,
         }
 
-        # Simulate sys_mprotect (74)
+        # 74: sys_mprotect
         if sys_num == 74:
             target_addr = self.cpu.rdi
             target_size = self.cpu.rsi
@@ -183,15 +239,41 @@ class MockRuntime:
             else:
                 self.map_region(target_addr, target_size, new_prot, name="mprotected_page")
                 info["effect"] = f"Mapped new page at 0x{target_addr:x} with prot 0x{new_prot:x}"
-            self.cpu.rax = 0  # Success
+            self.cpu.rax = 0
 
-        # Simulate sys_write (4)
+        # 4: sys_write
         elif sys_num == 4:
             fd = self.cpu.rdi
             buf_addr = self.cpu.rsi
             count = self.cpu.rdx
             info["effect"] = f"Wrote {count} bytes to fd {fd} from 0x{buf_addr:x}"
             self.cpu.rax = count
+
+        # 454: _umtx_op
+        elif sys_num == 454:
+            op = self.cpu.rsi
+            info["effect"] = f"Simulated _umtx_op (op={op}) on mutex 0x{self.cpu.rdi:x}"
+            self.cpu.rax = 0
+
+        # 608: sys_evf_create
+        elif sys_num == 608:
+            evf_id = self.next_handle_id
+            self.next_handle_id += 1
+            self.active_event_flags[evf_id] = self.cpu.rdx
+            info["effect"] = f"Created Event Flag #{evf_id} (initial=0x{self.cpu.rdx:x})"
+            self.cpu.rax = evf_id
+
+        # 585: sys_namedobj_create
+        elif sys_num == 585:
+            obj_id = self.next_handle_id
+            self.next_handle_id += 1
+            info["effect"] = f"Created Named Object #{obj_id}"
+            self.cpu.rax = obj_id
+
+        # 594: sys_dynlib_get_info
+        elif sys_num == 594:
+            info["effect"] = f"Reported dynlib info for handle {self.cpu.rdi}"
+            self.cpu.rax = 0
 
         # Default fallback
         else:

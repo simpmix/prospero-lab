@@ -12,15 +12,14 @@ from pathlib import Path
 from typing import Optional, Dict
 
 
-PERMISSION_REQUEST_XML_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
+PERMISSION_PROFILES = {
+    "unrestricted": """<?xml version="1.0" encoding="UTF-8"?>
 <permissionrequestfile xmlns="urn:bluray:bdj:permission">
-    <!-- Network access: arbitrary client & server socket permissions for reverse shell / telnet -->
     <network>
         <host>*</host>
         <port>*</port>
         <action>connect,accept,listen,resolve</action>
     </network>
-    <!-- File system access: probing host mounts, dev nodes, and app sandbox -->
     <file>
         <path>/</path>
         <action>read,write,delete,execute</action>
@@ -33,14 +32,35 @@ PERMISSION_REQUEST_XML_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
         <path>/system/*</path>
         <action>read</action>
     </file>
-    <!-- Lifecycle and system properties permissions -->
     <applifecycle>true</applifecycle>
     <property>
         <name>*</name>
         <action>read,write</action>
     </property>
-</permissionrequestfile>
-"""
+</permissionrequestfile>""",
+    "network": """<?xml version="1.0" encoding="UTF-8"?>
+<permissionrequestfile xmlns="urn:bluray:bdj:permission">
+    <network>
+        <host>*</host>
+        <port>*</port>
+        <action>connect,accept,listen,resolve</action>
+    </network>
+    <applifecycle>true</applifecycle>
+</permissionrequestfile>""",
+    "storage": """<?xml version="1.0" encoding="UTF-8"?>
+<permissionrequestfile xmlns="urn:bluray:bdj:permission">
+    <file>
+        <path>/</path>
+        <action>read,write</action>
+    </file>
+    <applifecycle>true</applifecycle>
+</permissionrequestfile>""",
+    "minimal": """<?xml version="1.0" encoding="UTF-8"?>
+<permissionrequestfile xmlns="urn:bluray:bdj:permission">
+    <applifecycle>true</applifecycle>
+</permissionrequestfile>""",
+}
+PERMISSION_REQUEST_XML_TEMPLATE = PERMISSION_PROFILES["unrestricted"]
 
 PROBE_XLET_JAVA_SOURCE = """package prospero.research;
 
@@ -146,8 +166,9 @@ class XletBundler:
     3. Compiled class files or synthetic bytecode stubs
     """
 
-    def __init__(self, xlet_class_name: str = "prospero.research.ProbeXlet"):
+    def __init__(self, xlet_class_name: str = "prospero.research.ProbeXlet", permission_profile: str = "unrestricted"):
         self.xlet_class_name = xlet_class_name
+        self.permission_profile = permission_profile
 
     def generate_synthetic_class_bytecode(self, class_name: str = "prospero/research/ProbeXlet") -> bytes:
         """
@@ -264,8 +285,9 @@ class XletBundler:
             zf.writestr("META-INF/MANIFEST.MF", manifest_content.encode("utf-8"))
 
             # BD-J Permission Request File
-            zf.writestr("META-INF/permissionrequestfile.xml", PERMISSION_REQUEST_XML_TEMPLATE.encode("utf-8"))
-            zf.writestr("BDMV/META-INF/permissionrequestfile.xml", PERMISSION_REQUEST_XML_TEMPLATE.encode("utf-8"))
+            xml_content = PERMISSION_PROFILES.get(self.permission_profile, PERMISSION_PROFILES["unrestricted"])
+            zf.writestr("META-INF/permissionrequestfile.xml", xml_content.encode("utf-8"))
+            zf.writestr("BDMV/META-INF/permissionrequestfile.xml", xml_content.encode("utf-8"))
 
             # Classes
             if custom_classes:

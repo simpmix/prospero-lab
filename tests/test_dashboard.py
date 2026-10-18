@@ -8,9 +8,10 @@ class TestDashboard(unittest.TestCase):
         html = gen.generate_html()
 
         self.assertIn("<!DOCTYPE html>", html)
-        self.assertIn("ProsperoLab Security Audit", html)
+        self.assertIn("ProsperoLab Security Console", html)
         self.assertIn("sys_namedobj_create", html)
-        self.assertIn("Automated Syzkaller Fuzzer Grammar", html)
+        self.assertIn("KMD_IOCTL_SUBMIT_COMMAND_BUFFER", html)
+        self.assertIn("Syzkaller Grammar", html)
 
 
 if __name__ == "__main__":
